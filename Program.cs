@@ -1,68 +1,135 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
-using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 
 namespace Downloader {
-    class Program {
-        static List<Task> downloads = new List<Task>();
-        static string urlPrefix = "http://ak.t0.tiles.virtualearth.net/tiles/o31311100030-";
-        static string urlSuffix = "?g=5197";
-        static string filePrefix = "D:\\Projects\\MapData\\virtual-earth-birdseye\\";
-        static Dictionary<int, List<string>> changedDirs = new Dictionary<int, List<string>>();
 
-        static void DownloadTile(int image, int zoom, int tile) {
-            var seperator = zoom > 1 ? "\\tile-" : "-";
-            var fileName = $"{filePrefix}{zoom}\\{image}{seperator}{tile:000}.jpg";
-            var fileDir2 = zoom>1?$"\\{image}" : "";
-            var fileDir = $"{filePrefix}{zoom}{fileDir2}";
-            if (!File.Exists(fileName) || (new FileInfo(fileName)).Length < 10) {
-                var url = $"{urlPrefix}{image}-{zoom}-{tile}{urlSuffix}";
-                //Console.WriteLine(url);
-                if(!Directory.Exists(fileDir)) {
-                    Directory.CreateDirectory(fileDir);
+    static class Program {
+
+        #region Private Fields
+
+        static readonly string filePrefix = "D:\\Projects\\MapData\\virtual-earth-birdseye\\";
+        static readonly HashSet<int> imageDownloadIds = new HashSet<int>();
+        static readonly List<string> imageDownloads = new List<string>();
+        static readonly object processLock = new object();
+        static readonly string urlPrefix = "http://ak.t0.tiles.virtualearth.net/tiles/o31311100030-";
+        static readonly string urlSuffix = "?g=5197";
+        static readonly WebClient webClient = new WebClient();
+        static List<Task> downloads = new List<Task>();
+        static List<Task> metadataDownloads = new List<Task>();
+        static StreamWriter metadataListFile;
+
+        #endregion Private Fields
+
+        #region Private Methods
+
+        static void CleanUp() {
+            var prefix = $"{filePrefix}vsfm overview\\";
+            for (var i = 5000; i < 8000; i++) {
+                var name = $"{i}-000";
+                if (!File.Exists($"{prefix}{name}.sift")) {
+                    File.Move($"{prefix}{name}.jpg", $"{prefix}junk\\{name}.jpg");
                 }
-                if(!changedDirs[zoom].Contains(fileDir)) {
-                    changedDirs[zoom].Add(fileDir);
+            }
+        }
+
+        static void Combine(string dir, int zoom) {
+            var imageTime = new DateTime(2000, 1, 1);
+            foreach (var image in Directory.EnumerateFiles(dir)) {
+                var tmpTime = File.GetLastWriteTime(image);
+                if (tmpTime > imageTime) {
+                    imageTime = tmpTime;
                 }
-                var wc = new WebClient();
-                //wc.DownloadFile(url, fileName);
-                downloads.Add(wc.DownloadFileTaskAsync(url, fileName).ContinueWith((x) => { Console.WriteLine(url);}));
+            }
+            if (imageTime <= File.GetLastWriteTime($"{dir}.jpg")) {
+                return;
+            }
+            var count = 1;
+            switch (zoom) {
+                case 2:
+                    count = 2;
+                    break;
+
+                case 3:
+                    count = 4;
+                    break;
+
+                case 19:
+                    count = 8;
+                    break;
+
+                case 20:
+                    count = 16;
+                    break;
+
+                default:
+                    return;
+            }
+            Console.WriteLine(dir);
+            lock (processLock) {
+                using (var process = new System.Diagnostics.Process()) {
+                    process.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+                    process.StartInfo.FileName = "stitch.bat";
+                    process.StartInfo.Arguments = $"{dir.Replace(filePrefix, "")} {count}";
+                    process.StartInfo.WorkingDirectory = filePrefix;
+                    process.Start();
+                    process.WaitForExit();
+                }
             }
         }
 
         static void DownloadImage(int image, int zoom = 20) {
+            var id = $"{image}{zoom}";
+            lock (imageDownloads) {
+                if (imageDownloads.Contains(id)) {
+                    return;
+                } else {
+                    imageDownloads.Add(id);
+                }
+            }
             var numTiles = 1;
             switch (zoom) {
                 case 1:
                     numTiles = 1;
                     break;
+
                 case 2:
                     numTiles = 4;
                     break;
+
                 case 3:
                     numTiles = 16;
                     break;
+
                 case 19:
                     numTiles = 47;
                     break;
+
                 case 20:
                     numTiles = 192;
                     break;
+
                 default:
                     return;
             }
+            var tileDownloads = new List<Task>();
             for (var i = 0; i < numTiles; i++) {
-                DownloadTile(image, zoom, i);
+                tileDownloads.Add(DownloadTileAsync(image, zoom, i));
+            }
+            if (zoom > 1) {
+                Task.WhenAll(tileDownloads.ToArray()).ContinueWith((x) => {
+                    Combine($"{filePrefix}{zoom}\\{image}", zoom);
+                });
             }
         }
 
         static void DownloadImage(string image) {
             int imageNum;
-            int zoom = 20;
+            var zoom = 20;
             var parts = image.Split('-');
             int tmp;
             if (parts.Length == 2 && int.TryParse(parts[1], out tmp) && tmp > 0) {
@@ -73,56 +140,211 @@ namespace Downloader {
             }
         }
 
-        static void Combine(string dir, int count) {
-            System.Diagnostics.Process process = new System.Diagnostics.Process();
-            process.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
-            process.StartInfo.FileName = "stitch.bat";
-            process.StartInfo.Arguments = $"{dir.Replace(filePrefix, "")} {count}";
-            process.StartInfo.WorkingDirectory = filePrefix;
-            process.Start();
+        static Task DownloadTileAsync(int image, int zoom, int tile) {
+            var seperator = zoom > 1 ? "\\tile-" : "-";
+            var fileName = $"{filePrefix}{zoom}\\{image}{seperator}{tile:000}.jpg";
+            var fileDir2 = zoom > 1 ? $"\\{image}" : "";
+            var fileDir = $"{filePrefix}{zoom}{fileDir2}";
+            var downloadTask = Task.CompletedTask;
+            if (!File.Exists(fileName) || (new FileInfo(fileName)).Length < 10) {
+                var url = $"{urlPrefix}{image}-{zoom}-{tile}{urlSuffix}";
+                if (!Directory.Exists(fileDir)) {
+                    Directory.CreateDirectory(fileDir);
+                }
+
+                WaitForDownloads();
+                using (var wc = new WebClient()) {
+                    downloadTask = wc.DownloadFileTaskAsync(url, fileName).ContinueWith((x) => { Console.WriteLine(url); });
+                    lock (downloads) {
+                        downloads.Add(downloadTask);
+                    }
+                }
+            }
+            return downloadTask;
+        }
+
+        static void GetViews() {
+            /*
+            minX = -41.30
+            minY = 174.75
+            maxX = -41.25
+            maxY = 174.81
+            */
+            const double minX = -41.285;
+            const double minY = 174.77;
+            const double maxX = -41.26;
+            const double maxY = 174.8;
+            const double stepX = 0.005;
+            const double stepY = 0.005;
+            var metadataListFileName = $"{filePrefix}metadata\\list.txt";
+            File.Delete(metadataListFileName);
+            metadataListFile = File.AppendText(metadataListFileName);
+            for (var x = minX; x <= maxX; x += stepX) {
+                for (var y = minY; y <= maxY; y += stepY) {
+                    for (var d = 90; d < 360; d += 45) {
+                        var coords = $"{x},{y}";
+                        var dir = d;
+                        var url = $"http://dev.virtualearth.net/REST/V1/Imagery/Metadata/Birdseye/{coords}?dir={dir}&key=Anqg-XzYo-sBPlzOWFHIcjC3F8s17P_O7L4RrevsHVg4fJk6g_eEmUBphtSn4ySg&zl=20&dl=2";
+                        /*var state = new MetadataState {
+                            coords = coords,
+                            dir = dir,
+                            url = url
+                        };*/
+                        //webClient.DownloadStringAsync(new Uri(url), state);
+                        using (var wc = new WebClient()) {
+                            var downloadTask = wc.DownloadStringTaskAsync(url).ContinueWith((data) => {
+                                var jsonText = data.Result;
+                                var json = JObject.Parse(jsonText);
+                                var resource = json["resourceSets"][0]["resources"][0];
+                                var imageUrl = (string)resource["imageUrl"];
+                                var match = Regex.Match(imageUrl, @"-([0-9]{1,6})-20-");
+                                var imageNum = int.Parse(match.Groups[1].Value);
+                                var save = false;
+                                lock (imageDownloadIds) {
+                                    if (!imageDownloadIds.Contains(imageNum)) {
+                                        imageDownloadIds.Add(imageNum);
+                                        save = true;
+                                    }
+                                }
+                                if (save) {
+                                    var metadataFile = $"{filePrefix}metadata\\{dir},{imageNum},{coords}.json";
+                                    if (!File.Exists(metadataFile)) {
+                                        File.WriteAllText(metadataFile, json.ToString());
+                                    }
+                                }
+                                lock (metadataListFile) {
+                                    metadataListFile.WriteLine($"{dir},{imageNum},{coords}");
+                                }
+                                Console.WriteLine($"{coords},{imageNum},{dir}");
+                                DownloadImage(imageNum, 20);
+                            });
+
+                            WaitForMetadataDownloads();
+                            lock (metadataDownloads) {
+                                metadataDownloads.Add(downloadTask);
+                            }
+                        }
+                    }
+                }
+            }
+            WaitForMetadataDownloads(true);
+            metadataListFile.Dispose();
         }
 
         static void Main(string[] args) {
-            for (var i = 1; i <= 20; i++) {
-                changedDirs[i] = new List<string>();
+            ServicePointManager.DefaultConnectionLimit = 1000;
+
+            webClient.DownloadStringCompleted += MetadataDownloaded;
+
+            GetViews();
+            if (args.Length == 1 && args[0] == "getviews") {
+                GetViews();
+                return;
             }
 
-            var images = File.ReadAllLines($"{filePrefix}images.txt");
             if (args.Length == 1 && File.Exists(args[0])) {
                 args = File.ReadAllLines(args[0]);
             }
-            foreach (var arg in images) {
+            foreach (var arg in args) {
                 DownloadImage(arg);
             }
-            Task.WaitAll(downloads.ToArray());
-            for(var i = 2; i <= 20; i++) {
-                var count = 1;
+
+            while (downloads.Count > 0) {
+                WaitForDownloads(true);
+            }
+
+            for (var i = 2; i <= 20; i++) {
                 var zoomDir = $"{filePrefix}{i}";
                 if (Directory.Exists(zoomDir)) {
-                    switch (i) {
-                        case 2:
-                            count = 2;
-                            break;
-                        case 3:
-                            count = 4;
-                            break;
-                        case 19:
-                            count = 8;
-                            break;
-                        case 20:
-                            count = 16;
-                            break;
-                        default:
-                            return;
-                    }
-                    foreach (var dir in changedDirs[i]) {
-                        Console.WriteLine(dir);
-                        Combine(dir, count);
+                    foreach (var dir in Directory.EnumerateDirectories(zoomDir)) {
+                        Combine(dir, i);
                     }
                 }
             }
             Console.WriteLine("Done");
-            //Console.ReadKey();
+            Console.ReadKey();
         }
+
+        private static void MetadataDownloaded(object sender, DownloadStringCompletedEventArgs e) {
+            if (e.Cancelled || e.Error != null) {
+                return;
+            }
+            var state = (MetadataState)e.UserState;
+            var jsonText = e.Result;
+            var json = JObject.Parse(jsonText);
+            var resource = json["resourceSets"][0]["resources"][0];
+            var imageUrl = (string)resource["imageUrl"];
+            var match = Regex.Match(imageUrl, @"-([0-9]{1,6})-20-");
+            var imageNum = int.Parse(match.Groups[1].Value);
+            var save = false;
+            lock (imageDownloadIds) {
+                if (!imageDownloadIds.Contains(imageNum)) {
+                    imageDownloadIds.Add(imageNum);
+                    save = true;
+                }
+            }
+            if (save) {
+                var metadataFile = $"{filePrefix}metadata\\{state.dir},{imageNum},{state.coords}.json";
+                if (!File.Exists(metadataFile)) {
+                    File.WriteAllText(metadataFile, json.ToString());
+                }
+            }
+            lock (metadataListFile) {
+                metadataListFile.WriteLine($"{state.dir},{imageNum},{state.coords}");
+            }
+            Console.WriteLine($"{state.coords},{imageNum},{state.dir}");
+            DownloadImage(imageNum, 20);
+        }
+
+        static void WaitForDownloads(bool all = false) {
+            if (!all && downloads.Count < 1000) {
+                return;
+            }
+            List<Task> oldDownloads;
+            lock (downloads) {
+                oldDownloads = downloads;
+                downloads = new List<Task>();
+            }
+            Task.WaitAll(oldDownloads.ToArray());
+        }
+
+        static void WaitForMetadataDownloads(bool all = false) {
+            if (!all && metadataDownloads.Count < 1000) {
+                return;
+            }
+            List<Task> oldDownloads;
+            lock (metadataDownloads) {
+                oldDownloads = metadataDownloads;
+                metadataDownloads = new List<Task>();
+            }
+            Task.WaitAll(oldDownloads.ToArray());
+        }
+
+        #endregion Private Methods
+
+        #region Public Structs
+
+        public struct MetadataState {
+
+            #region Public Fields
+
+            public readonly string coords;
+            public readonly int dir;
+            public readonly string url;
+
+            #endregion Public Fields
+
+            #region Public Constructors
+
+            public MetadataState(string coords, int dir, string url) {
+                this.coords = coords;
+                this.dir = dir;
+                this.url = url;
+            }
+
+            #endregion Public Constructors
+        }
+
+        #endregion Public Structs
     }
 }
