@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace Downloader {
@@ -15,27 +15,18 @@ namespace Downloader {
         static readonly string filePrefix = "D:\\Projects\\MapData\\virtual-earth-birdseye\\";
         static readonly HashSet<int> imageDownloadIds = new HashSet<int>();
         static readonly List<string> imageDownloads = new List<string>();
+        static readonly Dictionary<string, ImageState> imagesDownloading = new Dictionary<string, ImageState>();
         static readonly object processLock = new object();
         static readonly string urlPrefix = "http://ak.t0.tiles.virtualearth.net/tiles/o31311100030-";
         static readonly string urlSuffix = "?g=5197";
         static readonly WebClient webClient = new WebClient();
-        static List<Task> downloads = new List<Task>();
-        static List<Task> metadataDownloads = new List<Task>();
+        static int downloadsCount;
+        static int metadataDownloadsCount;
         static StreamWriter metadataListFile;
 
         #endregion Private Fields
 
         #region Private Methods
-
-        static void CleanUp() {
-            var prefix = $"{filePrefix}vsfm overview\\";
-            for (var i = 5000; i < 8000; i++) {
-                var name = $"{i}-000";
-                if (!File.Exists($"{prefix}{name}.sift")) {
-                    File.Move($"{prefix}{name}.jpg", $"{prefix}junk\\{name}.jpg");
-                }
-            }
-        }
 
         static void Combine(string dir, int zoom) {
             var imageTime = new DateTime(2000, 1, 1);
@@ -82,6 +73,10 @@ namespace Downloader {
             }
         }
 
+        private static void Combine(int image, int zoom) {
+            Combine($"{filePrefix}{zoom}\\{image}", zoom);
+        }
+
         static void DownloadImage(int image, int zoom = 20) {
             var id = $"{image}{zoom}";
             lock (imageDownloads) {
@@ -116,14 +111,14 @@ namespace Downloader {
                 default:
                     return;
             }
-            var tileDownloads = new List<Task>();
+            var tileDownloads = new SortedSet<int>();
             for (var i = 0; i < numTiles; i++) {
-                tileDownloads.Add(DownloadTileAsync(image, zoom, i));
+                if (DownloadTile(image, zoom, i)) {
+                    tileDownloads.Add(i);
+                }
             }
             if (zoom > 1) {
-                Task.WhenAll(tileDownloads.ToArray()).ContinueWith((x) => {
-                    Combine($"{filePrefix}{zoom}\\{image}", zoom);
-                });
+                imagesDownloading.Add($"{image}-{zoom}", new ImageState(image, zoom, tileDownloads));
             }
         }
 
@@ -140,12 +135,11 @@ namespace Downloader {
             }
         }
 
-        static Task DownloadTileAsync(int image, int zoom, int tile) {
+        static bool DownloadTile(int image, int zoom, int tile) {
             var seperator = zoom > 1 ? "\\tile-" : "-";
             var fileName = $"{filePrefix}{zoom}\\{image}{seperator}{tile:000}.jpg";
             var fileDir2 = zoom > 1 ? $"\\{image}" : "";
             var fileDir = $"{filePrefix}{zoom}{fileDir2}";
-            var downloadTask = Task.CompletedTask;
             if (!File.Exists(fileName) || (new FileInfo(fileName)).Length < 10) {
                 var url = $"{urlPrefix}{image}-{zoom}-{tile}{urlSuffix}";
                 if (!Directory.Exists(fileDir)) {
@@ -153,14 +147,12 @@ namespace Downloader {
                 }
 
                 WaitForDownloads();
-                using (var wc = new WebClient()) {
-                    downloadTask = wc.DownloadFileTaskAsync(url, fileName).ContinueWith((x) => { Console.WriteLine(url); });
-                    lock (downloads) {
-                        downloads.Add(downloadTask);
-                    }
-                }
+                downloadsCount++;
+                var state = new TileState(image, zoom, tile);
+                webClient.DownloadFileAsync(new Uri(url), fileName, state);
+                return true;
             }
-            return downloadTask;
+            return false;
         }
 
         static void GetViews() {
@@ -185,45 +177,10 @@ namespace Downloader {
                         var coords = $"{x},{y}";
                         var dir = d;
                         var url = $"http://dev.virtualearth.net/REST/V1/Imagery/Metadata/Birdseye/{coords}?dir={dir}&key=Anqg-XzYo-sBPlzOWFHIcjC3F8s17P_O7L4RrevsHVg4fJk6g_eEmUBphtSn4ySg&zl=20&dl=2";
-                        /*var state = new MetadataState {
-                            coords = coords,
-                            dir = dir,
-                            url = url
-                        };*/
-                        //webClient.DownloadStringAsync(new Uri(url), state);
-                        using (var wc = new WebClient()) {
-                            var downloadTask = wc.DownloadStringTaskAsync(url).ContinueWith((data) => {
-                                var jsonText = data.Result;
-                                var json = JObject.Parse(jsonText);
-                                var resource = json["resourceSets"][0]["resources"][0];
-                                var imageUrl = (string)resource["imageUrl"];
-                                var match = Regex.Match(imageUrl, @"-([0-9]{1,6})-20-");
-                                var imageNum = int.Parse(match.Groups[1].Value);
-                                var save = false;
-                                lock (imageDownloadIds) {
-                                    if (!imageDownloadIds.Contains(imageNum)) {
-                                        imageDownloadIds.Add(imageNum);
-                                        save = true;
-                                    }
-                                }
-                                if (save) {
-                                    var metadataFile = $"{filePrefix}metadata\\{dir},{imageNum},{coords}.json";
-                                    if (!File.Exists(metadataFile)) {
-                                        File.WriteAllText(metadataFile, json.ToString());
-                                    }
-                                }
-                                lock (metadataListFile) {
-                                    metadataListFile.WriteLine($"{dir},{imageNum},{coords}");
-                                }
-                                Console.WriteLine($"{coords},{imageNum},{dir}");
-                                DownloadImage(imageNum, 20);
-                            });
-
-                            WaitForMetadataDownloads();
-                            lock (metadataDownloads) {
-                                metadataDownloads.Add(downloadTask);
-                            }
-                        }
+                        var state = new MetadataState(coords, dir, url);
+                        WaitForMetadataDownloads();
+                        webClient.DownloadStringAsync(new Uri(url), state);
+                        metadataDownloadsCount++;
                     }
                 }
             }
@@ -235,6 +192,7 @@ namespace Downloader {
             ServicePointManager.DefaultConnectionLimit = 1000;
 
             webClient.DownloadStringCompleted += MetadataDownloaded;
+            webClient.DownloadFileCompleted += TileDownloaded;
 
             GetViews();
             if (args.Length == 1 && args[0] == "getviews") {
@@ -249,9 +207,7 @@ namespace Downloader {
                 DownloadImage(arg);
             }
 
-            while (downloads.Count > 0) {
-                WaitForDownloads(true);
-            }
+            WaitForDownloads(true);
 
             for (var i = 2; i <= 20; i++) {
                 var zoomDir = $"{filePrefix}{i}";
@@ -266,6 +222,7 @@ namespace Downloader {
         }
 
         private static void MetadataDownloaded(object sender, DownloadStringCompletedEventArgs e) {
+            metadataDownloadsCount--;
             if (e.Cancelled || e.Error != null) {
                 return;
             }
@@ -296,35 +253,57 @@ namespace Downloader {
             DownloadImage(imageNum, 20);
         }
 
-        static void WaitForDownloads(bool all = false) {
-            if (!all && downloads.Count < 1000) {
+        private static void TileDownloaded(object sender, System.ComponentModel.AsyncCompletedEventArgs e) {
+            downloadsCount--;
+            if (e.Cancelled || e.Error != null) {
                 return;
             }
-            List<Task> oldDownloads;
-            lock (downloads) {
-                oldDownloads = downloads;
-                downloads = new List<Task>();
+            var state = (TileState)e.UserState;
+            var imageState = imagesDownloading[$"{state.image}-{state.zoom}"];
+            imageState.tiles.Remove(state.tile);
+            if (imageState.tiles.Count == 0) {
+                Combine(imageState.image, imageState.zoom);
             }
-            Task.WaitAll(oldDownloads.ToArray());
+        }
+
+        static void WaitForDownloads(bool all = false) {
+            while ((all && downloadsCount > 0) || downloadsCount > 100) {
+                Thread.Sleep(10);
+            }
         }
 
         static void WaitForMetadataDownloads(bool all = false) {
-            if (!all && metadataDownloads.Count < 1000) {
-                return;
+            while ((all && metadataDownloadsCount > 0) || metadataDownloadsCount > 100) {
+                Thread.Sleep(10);
             }
-            List<Task> oldDownloads;
-            lock (metadataDownloads) {
-                oldDownloads = metadataDownloads;
-                metadataDownloads = new List<Task>();
-            }
-            Task.WaitAll(oldDownloads.ToArray());
         }
 
         #endregion Private Methods
 
-        #region Public Structs
+        #region Public Classes
 
-        public struct MetadataState {
+        public class ImageState {
+
+            #region Public Fields
+
+            public readonly int image;
+            public readonly SortedSet<int> tiles;
+            public readonly int zoom;
+
+            #endregion Public Fields
+
+            #region Public Constructors
+
+            public ImageState(int image, int zoom, SortedSet<int> tiles) {
+                this.image = image;
+                this.zoom = zoom;
+                this.tiles = tiles;
+            }
+
+            #endregion Public Constructors
+        }
+
+        public class MetadataState {
 
             #region Public Fields
 
@@ -345,6 +324,27 @@ namespace Downloader {
             #endregion Public Constructors
         }
 
-        #endregion Public Structs
+        public class TileState {
+
+            #region Public Fields
+
+            public readonly int image;
+            public readonly int tile;
+            public readonly int zoom;
+
+            #endregion Public Fields
+
+            #region Public Constructors
+
+            public TileState(int image, int zoom, int tile) {
+                this.image = image;
+                this.zoom = zoom;
+                this.tile = tile;
+            }
+
+            #endregion Public Constructors
+        }
+
+        #endregion Public Classes
     }
 }
