@@ -9,9 +9,19 @@ namespace Downloader
 {
     public struct Coordinate
     {
+        #region Public Fields
+
+        public double Altitude;
+
+        public double Latitude;
+
+        public double Longitude;
+
+        #endregion Public Fields
+
         #region Public Constructors
 
-        public Coordinate(Point3D vector)
+        public Coordinate(Vector3 vector)
         {
             const double flattening = 1 / 298.257222101;
             const double eccentricity = flattening * (2 - flattening);
@@ -45,165 +55,313 @@ namespace Downloader
 
         #endregion Public Constructors
 
-        #region Public Properties
+        #region Public Methods
 
-        public double Altitude { get; set; }
-        public double Latitude { get; set; }
-        public double Longitude { get; set; }
-
-        #endregion Public Properties
-
-        public Point3D ToNZTM()
+        public Vector3 ToNZTM()
         {
-            var xy = new[] { 0.0, 0.0 };
-            var z = new[] { 0.0 };
+            var xy = new[] { Longitude, Latitude };
+            var z = new[] { Altitude };
             Reproject.ReprojectPoints(xy, z, KnownCoordinateSystems.Geographic.World.WGS1984, KnownCoordinateSystems.Projected.NationalGridsNewZealand.NZGD2000NewZealandTransverseMercator, 0, 1);
-            return new Point3D { X = xy[0], Y = xy[1], Z = z[0] };
+            return new Vector3 { X = xy[0], Y = xy[1], Z = z[0] };
         }
+
+        #endregion Public Methods
     }
 
-    public struct Point3D
+    public struct Matrix
     {
-        #region Public Properties
+        /// <summary>
+        /// A first row and first column value.
+        /// </summary>
 
-        public double X { get; set; }
-        public double Y { get; set; }
-        public double Z { get; set; }
+        #region Public Fields
 
-        public static Point3D operator+ (Point3D l, Point3D r)
+        public double M11;
+
+        /// <summary>
+        /// A first row and second column value.
+        /// </summary>
+
+        public double M12;
+
+        /// <summary>
+        /// A first row and third column value.
+        /// </summary>
+
+        public double M13;
+
+        /// <summary>
+        /// A second row and first column value.
+        /// </summary>
+
+        public double M21;
+
+        /// <summary>
+        /// A second row and second column value.
+        /// </summary>
+
+        public double M22;
+
+        /// <summary>
+        /// A second row and third column value.
+        /// </summary>
+
+        public double M23;
+
+        /// <summary>
+        /// A third row and first column value.
+        /// </summary>
+
+        public double M31;
+
+        /// <summary>
+        /// A third row and second column value.
+        /// </summary>
+
+        public double M32;
+
+        /// <summary>
+        /// A third row and third column value.
+        /// </summary>
+
+        public double M33;
+
+        #endregion Public Fields
+
+        #region Public Methods
+
+        public void makeRotationDir(Vector3 direction, Vector3 up)
         {
-            return new Point3D { X = l.X + r.X, Y = l.Y + r.Y, Z = l.Z + r.Z };
+            Vector3 xaxis = Vector3.Cross(up, direction);
+            xaxis.Normalize();
+
+            Vector3 yaxis = Vector3.Cross(direction, xaxis);
+            yaxis.Normalize();
+
+            M11 = xaxis.X;
+            M21 = yaxis.X;
+            M31 = direction.X;
+
+            M12 = xaxis.Y;
+            M22 = yaxis.Y;
+            M32 = direction.Y;
+
+            M13 = xaxis.Z;
+            M23 = yaxis.Z;
+            M33 = direction.Z;
         }
 
-        public static Point3D operator -(Point3D l, Point3D r)
-        {
-            return new Point3D { X = l.X - r.X, Y = l.Y - r.Y, Z = l.Z - r.Z };
-        }
-
-        #endregion Public Properties
+        #endregion Public Methods
     }
 
     public struct Quaternion
     {
+        #region Public Fields
 
+        public double W;
+        public double X;
+        public double Y;
+        public double Z;
 
-        #region Public Properties
+        #endregion Public Fields
 
-        public double X { get; set; }
-        public double Y { get; set; }
-        public double Z { get; set; }
-        public double W { get; set; }
+        #region Public Methods
 
-        #endregion Public Properties
+        /// <summary>
+        /// Creates a new <see cref="Quaternion"/> from the specified <see cref="Matrix"/>.
+        /// </summary>
+        /// <param name="matrix">The rotation matrix.</param>
+        /// <returns>A quaternion composed from the rotation part of the matrix.</returns>
+        public static Quaternion CreateFromRotationMatrix(Matrix matrix)
+        {
+            Quaternion quaternion;
+            double sqrt;
+            double half;
+            double scale = matrix.M11 + matrix.M22 + matrix.M33;
+
+            if (scale > 0.0f)
+            {
+                sqrt = Math.Sqrt(scale + 1.0f);
+                quaternion.W = sqrt * 0.5f;
+                sqrt = 0.5f / sqrt;
+
+                quaternion.X = (matrix.M23 - matrix.M32) * sqrt;
+                quaternion.Y = (matrix.M31 - matrix.M13) * sqrt;
+                quaternion.Z = (matrix.M12 - matrix.M21) * sqrt;
+
+                return quaternion;
+            }
+            if ((matrix.M11 >= matrix.M22) && (matrix.M11 >= matrix.M33))
+            {
+                sqrt = Math.Sqrt(1.0f + matrix.M11 - matrix.M22 - matrix.M33);
+                half = 0.5f / sqrt;
+
+                quaternion.X = 0.5f * sqrt;
+                quaternion.Y = (matrix.M12 + matrix.M21) * half;
+                quaternion.Z = (matrix.M13 + matrix.M31) * half;
+                quaternion.W = (matrix.M23 - matrix.M32) * half;
+
+                return quaternion;
+            }
+            if (matrix.M22 > matrix.M33)
+            {
+                sqrt = Math.Sqrt(1.0f + matrix.M22 - matrix.M11 - matrix.M33);
+                half = 0.5f / sqrt;
+
+                quaternion.X = (matrix.M21 + matrix.M12) * half;
+                quaternion.Y = 0.5f * sqrt;
+                quaternion.Z = (matrix.M32 + matrix.M23) * half;
+                quaternion.W = (matrix.M31 - matrix.M13) * half;
+
+                return quaternion;
+            }
+            sqrt = Math.Sqrt(1.0f + matrix.M33 - matrix.M11 - matrix.M22);
+            half = 0.5f / sqrt;
+
+            quaternion.X = (matrix.M31 + matrix.M13) * half;
+            quaternion.Y = (matrix.M32 + matrix.M23) * half;
+            quaternion.Z = 0.5f * sqrt;
+            quaternion.W = (matrix.M12 - matrix.M21) * half;
+
+            return quaternion;
+        }
+
+        #endregion Public Methods
     }
 
-    /*struct MapCamera {
-        MapCamera(object n, object u, object o, object s, object l, object a, object y, object p, object w, object b) {
-            var tt = () => {
-                var l, h, b, p;
-                if (!ni) {
-                    ft = s === 0 && et === -90 && a === 0, st = ft || ct <= ot, at = st && ft ? f.simpleGround : ei.fromNormal(rt, it.getUpVector(rt));
-                    var n = f.simpleWorldToFrustumNoZ, i = 1 / g, u = g * 1000.0;
-                    if (ut = it.getNadirMatrix(rt), ft || (ut = e.multiply(ut, e.rotationZ(-pt), e.rotationX(-(et + 90)), e.rotationZ(-lt))), st) ft ? (n.m22 = n.m11 = i, n.m33 = i * -0.001, n.offsetX = ut.offsetX * i, n.offsetY = ut.offsetY * i) : n = e.multiply(ut, e.scaling(i, i, 1 / u)); else {
-                        var y = Math.pow(2, wt) * g, o = 1 / ct, w = o / y;
-                        u = Math.min(o * 0.99, u), l = o - u, h = o + u, n = e.multiply(ut, e.translation(bt), e.translation(0, 0, o), new e(w, 0, 0, 0, 0, w, 0, 0, 0, 0, h / (h - l), 1, 0, 0, l * h / (l - h), 0), e.scaling(y / g, y / g, 1)), b = n.transform(rt), n.multiplyBy(e.translation(r.multiply(b, -1)));
-                    }
-                    ft? ht = n.clone() : (vt = n.invert().projectOnPlane(at), ht = vt.invert()), ft ? (k = ht.clone(), k.m11 *= d, k.m22 *= d, k.m33 *= d, k.offsetX *= d, k.offsetY *= d, p = g / d, nt = ut.clone(), nt.m11 *= p, nt.m22 *= p, nt.m33 *= u / d, nt.offsetX *= -1, nt.offsetY *= -1) : (k = e.multiply(ht, e.scaling(d)), nt = k.invert()), yt = it.toLocation(rt), kt = f.widthToMercatorZoom(g, it, rt), dt = it.unitsToMeters(rt, g) / t.zoomOriginWidth, gt = !st || Math.abs(et + 90) > ot || it !== c, ni = !0;
-                }
-            }
-            var ti = this;
-            var it = n, rt = u, g = o, pt = s || 0, et = l === h ? -90 : l, lt = a || 0, ct = y || 0, wt = p || 0, bt = w || new r(0, 0, 0), ft, st, at, ut, ht, vt, k, nt, yt, kt, dt, gt, d = b || t.zoomOriginWidth, ni = !1;
-            this.getCrs = function() {
-                return it;
-            }, this.getLookAt = function() {
-                return rt;
-            }, this.getWidth = function() {
-                return g;
-            }, this.getHeading = function() {
-                return pt;
-            }, this.getPitch = function() {
-                return et;
-            }, this.getRoll = function() {
-                return lt;
-            }, this.getDistanceInverse = function() {
-                return ct;
-            }, this.getZoomDelta = function() {
-                return wt;
-            }, this.getPerspectiveOrigin = function() {
-                return bt;
-            }, this.getZoomOriginWidth = function() {
-                return d;
-            }, this.getGroundPlane = function() {
-                return tt(), this.getGroundPlane = function() {
-                    return at;
-                }, at;
-            }, this.getWorldToViewport = function() {
-                return tt(), this.getWorldToViewport = function() {
-                    return k;
-                }, k;
-            }, this.getViewportToWorld = function() {
-                return tt(), this.getViewportToWorld = function() {
-                    return nt;
-                }, nt;
-            }, this.getWorldToFrustum = function() {
-                return tt(), this.getWorldToFrustum = function() {
-                    return ht;
-                }, ht;
-            }, this.getFrustumToWorld = function() {
-                return tt(), this.getFrustumToWorld = function() {
-                    return vt;
-                }, vt;
-            }, this.getCenter = function() {
-                return tt(), this.getCenter = function() {
-                    return yt;
-                }, yt;
-            }, this.getMercatorZoom = function() {
-                return tt(), this.getMercatorZoom = function() {
-                    return kt;
-                }, kt;
-            }, this.getMetersPerPixel = function() {
-                return tt(), this.getMetersPerPixel = function() {
-                    return dt;
-                }, dt;
-            }, this.getNeedsElevation = function() {
-                return tt(), this.getNeedsElevation = function() {
-                    return gt;
-                }, gt;
-            }, this.getAlignedCamera = function(n, t, r, u) {
-                var s, l;
-                tt();
-                var v = g / Math.Pow(2, n), o, h = null, c = 0, a = null;
-                return t ? (o = t, st || (a = e.multiply(ut, e.translation(bt)), h = a.transform(o), c = n + wt)) : o = rt, s = pt, u && (s = s + u), c = 0, l = new f(it, o, v, s, et, lt, ct, c, h, d), r && (o = l.getViewportToWorld().transform(new i(-r.x, -r.y)), st || (h = a.transform(o)), l = new f(it, o, v, s, et, lt, ct, c, h, d)), l;
-            };
+    public struct Vector3
+    {
+        #region Public Fields
+
+        public double X;
+        public double Y;
+        public double Z;
+
+        #endregion Public Fields
+
+        #region Private Fields
+
+        private static Vector3 zero = new Vector3(0.0, 0.0, 0.0);
+
+        #endregion Private Fields
+
+        #region Public Constructors
+
+        public Vector3(double x, double y, double z) : this()
+        {
+            X = x;
+            Y = y;
+            Z = z;
         }
 
-        public static MapCamera fromDirectionVector(object n, object t, object i, object u, object o, object s) {
-            var y;
-            var a;
-            var p = n.getNadirMatrix(t);
-            var h = p.transform(Point3D.add(t, u)).normalize();
-            var c = 0;
-            if (h.x !== 0 || h.y !== 0) {
-                directionXY = new Point3D(h.x, h.y, 0).normalize();
-                c = Math.Acos(Point3D.dot(directionXY, new Point3D(0, -1, 0))) * l.degreesPerRadian;
-                directionXY.x < 0 && (c = 360 - c);
-            }
-            var w = (Math.PI / 2 - Math.Acos(Point3D.dot(h, new Point3D(0, 0, -1)))) * l.degreesPerRadian;
-            var a = 0;
-            var b = e.multiply(p, e.rotationZ(-c), e.rotationX(-(w + 90)));
-            var v = b.transform(Point3D.add(t, o));
-            if (v.x != 0 || v.y != 0) {
-                y = new Point3D(v.x, v.y, 0).normalize();
-                a = Math.Acos(Point3D.dot(y, new Point3D(0, -1, 0))) * l.degreesPerRadian;
-                if (y.x < 0) {
-                    a = 360 - a;
-                }
-            }
-            return new MapCamera(n, t, i, c, w, a, s);
-        }
-    }*/
+        #endregion Public Constructors
 
-    internal static class MathUtils
+        #region Public Methods
+
+        /// <summary>
+        /// Computes the cross product of two vectors.
+        /// </summary>
+        /// <param name="vector1">The first vector.</param>
+        /// <param name="vector2">The second vector.</param>
+        /// <returns>The cross product of two vectors.</returns>
+        public static Vector3 Cross(Vector3 vector1, Vector3 vector2)
+        {
+            var x = vector1.Y * vector2.Z - vector2.Y * vector1.Z;
+            var y = -(vector1.X * vector2.Z - vector2.X * vector1.Z);
+            var z = vector1.X * vector2.Y - vector2.X * vector1.Y;
+            var result = new Vector3();
+            result.X = x;
+            result.Y = y;
+            result.Z = z;
+            return result;
+        }
+
+        /// <summary>
+        /// Returns the distance between two vectors.
+        /// </summary>
+        /// <param name="value1">The first vector.</param>
+        /// <param name="value2">The second vector.</param>
+        /// <returns>The distance between two vectors.</returns>
+        public static double Distance(Vector3 value1, Vector3 value2)
+        {
+            double result;
+            DistanceSquared(ref value1, ref value2, out result);
+            return Math.Sqrt(result);
+        }
+
+        /// <summary>
+        /// Returns the distance between two vectors.
+        /// </summary>
+        /// <param name="value1">The first vector.</param>
+        /// <param name="value2">The second vector.</param>
+        /// <param name="result">The distance between two vectors as an output parameter.</param>
+        public static void Distance(ref Vector3 value1, ref Vector3 value2, out double result)
+        {
+            DistanceSquared(ref value1, ref value2, out result);
+            result = Math.Sqrt(result);
+        }
+
+        /// <summary>
+        /// Returns the squared distance between two vectors.
+        /// </summary>
+        /// <param name="value1">The first vector.</param>
+        /// <param name="value2">The second vector.</param>
+        /// <returns>The squared distance between two vectors.</returns>
+        public static double DistanceSquared(Vector3 value1, Vector3 value2)
+        {
+            return (value1.X - value2.X) * (value1.X - value2.X) +
+                    (value1.Y - value2.Y) * (value1.Y - value2.Y) +
+                    (value1.Z - value2.Z) * (value1.Z - value2.Z);
+        }
+
+        /// <summary>
+        /// Returns the squared distance between two vectors.
+        /// </summary>
+        /// <param name="value1">The first vector.</param>
+        /// <param name="value2">The second vector.</param>
+        /// <param name="result">The squared distance between two vectors as an output parameter.</param>
+        public static void DistanceSquared(ref Vector3 value1, ref Vector3 value2, out double result)
+        {
+            result = (value1.X - value2.X) * (value1.X - value2.X) +
+                     (value1.Y - value2.Y) * (value1.Y - value2.Y) +
+                     (value1.Z - value2.Z) * (value1.Z - value2.Z);
+        }
+
+        /// <summary>
+        /// Creates a new <see cref="Vector3"/> that contains a normalized values from another vector.
+        /// </summary>
+        /// <param name="value">Source <see cref="Vector3"/>.</param>
+        /// <returns>Unit vector.</returns>
+        public static Vector3 Normalize(Vector3 value)
+        {
+            double factor = Distance(value, zero);
+            factor = 1f / factor;
+            return new Vector3(value.X * factor, value.Y * factor, value.Z * factor);
+        }
+
+        public static Vector3 operator -(Vector3 l, Vector3 r)
+        {
+            return new Vector3 { X = l.X - r.X, Y = l.Y - r.Y, Z = l.Z - r.Z };
+        }
+
+        public static Vector3 operator +(Vector3 l, Vector3 r)
+        {
+            return new Vector3 { X = l.X + r.X, Y = l.Y + r.Y, Z = l.Z + r.Z };
+        }
+
+        public void Normalize()
+        {
+            double factor = Distance(this, zero);
+            factor = 1f / factor;
+            X = X * factor;
+            Y = Y * factor;
+            Z = Z * factor;
+        }
+
+        #endregion Public Methods
+    }
+
+    public static class MathUtils
     {
         #region Public Fields
 
@@ -211,5 +369,33 @@ namespace Downloader
         public const double earthRadiusInMeters = 6378137;
 
         #endregion Public Fields
+
+        #region Public Methods
+
+        public static Matrix makeRotationDir(Vector3 direction, Vector3 up)
+        {
+            var matrix = new Matrix();
+            Vector3 xaxis = Vector3.Cross(up, direction);
+            xaxis.Normalize();
+
+            Vector3 yaxis = Vector3.Cross(direction, xaxis);
+            yaxis.Normalize();
+
+            matrix.M11 = xaxis.X;
+            matrix.M21 = yaxis.X;
+            matrix.M31 = direction.X;
+
+            matrix.M12 = xaxis.Y;
+            matrix.M22 = yaxis.Y;
+            matrix.M32 = direction.Y;
+
+            matrix.M13 = xaxis.Z;
+            matrix.M23 = yaxis.Z;
+            matrix.M33 = direction.Z;
+
+            return matrix;
+        }
+
+        #endregion Public Methods
     }
 }
