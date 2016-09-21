@@ -386,10 +386,12 @@ namespace Downloader
             File.Delete(geolocationFileName);
             var geolocationFile = File.AppendText(geolocationFileName);
             var i = 0;
-            foreach (var file in Directory.EnumerateFiles($"{filePrefix}20"))
+            var regex = new Regex("([0-9]+)\\.jpg");
+            foreach (var file in Directory.EnumerateFiles(@"C:\Users\duckb\Downloads\COLMAP-2.0-windows\wellington-resized\"/*$"{filePrefix}20"*/))
             {
                 var fileInfo = new FileInfo(file);
-                var image = fileInfo.Name.Replace(".jpg", "");
+                var match = regex.Match(fileInfo.Name);
+                var image = match.Groups[1].Value;
                 var metadataFileList = metadata[image];
                 var metadataFile = $"{filePrefix}metadata\\json\\{image}.json";
                 if (!File.Exists(metadataFile))
@@ -420,7 +422,7 @@ namespace Downloader
                     };
                     var coords = new Coordinate(point);
                     //var destName = $"{resource["orientation"]}_{time.ToString("yyyy-MM-dd_HH-mm")}_{image}.jpg";
-                    var destName = $"{time.ToString("yyyy-MM-dd_HH-mm-ss")}_{image}.jpg";
+                    var destName = fileInfo.Name;
                     /*var destDir = $"E:\\Projects\\Pix4D\\Wellington\\images\\";
                     var destFile = $"{destDir}{destName}";
                     if (!File.Exists(destFile))
@@ -465,7 +467,11 @@ namespace Downloader
                     // -p,-r,-y = no
                     // -p,-r,y = no
                     // p,r,y = ?
-                    geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},{(1) * pitch * MathUtils.degreesPerRadian},{(1) * roll * MathUtils.degreesPerRadian},{(1) * yaw * MathUtils.degreesPerRadian}");
+                    // -p,y,r = no
+                    // r,-p,y = no
+                    // -p,r,y = no
+                    //geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},{(-1) * pitch * MathUtils.degreesPerRadian},{(1) * roll * MathUtils.degreesPerRadian},{(1) * yaw * MathUtils.degreesPerRadian}");
+                    geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},-45.0,0.0,0.0");
                 }
                 catch (Exception e)
                 {
@@ -486,7 +492,6 @@ namespace Downloader
             using (var db = new Colmap())
             {
                 i = 0;
-                var regex = new Regex("([0-9]+)\\.jpg");
                 foreach (var colmapImage in db.images)
                 {
                     var match = regex.Match(colmapImage.name);
