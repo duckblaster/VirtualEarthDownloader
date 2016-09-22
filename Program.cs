@@ -387,6 +387,10 @@ namespace Downloader
             var geolocationFile = File.AppendText(geolocationFileName);
             var i = 0;
             var regex = new Regex("([0-9]+)\\.jpg");
+            var rand = new Random();
+            var angle1 = 0;
+            var angle2 = 0;
+            var angle3 = 0;
             foreach (var file in Directory.EnumerateFiles(@"C:\Users\duckb\Downloads\COLMAP-2.0-windows\wellington-resized\"/*$"{filePrefix}20"*/))
             {
                 var fileInfo = new FileInfo(file);
@@ -453,15 +457,20 @@ namespace Downloader
                     var rotMatrix = MathUtils.makeRotationDir(cameraForwardLocal, cameraUpLocal);
                     var cameraRot = Quaternion.CreateFromRotationMatrix(rotMatrix);
 
-                    var q_r = cameraRot.W;
+                    imageTransforms[image] = new ImageTransform(cameraPos, cameraRot);
+
+                    var rotX = -Math.Atan2(rotMatrix.M32, rotMatrix.M33) * MathUtils.degreesPerRadian;
+                    var rotY = -Math.Atan2(-rotMatrix.M31, Math.Sqrt(Math.Pow(rotMatrix.M32, 2) + Math.Pow(rotMatrix.M33, 2))) * MathUtils.degreesPerRadian;
+                    var rotZ = -Math.Atan2(rotMatrix.M21, rotMatrix.M11) * MathUtils.degreesPerRadian;
+
+                    /*var q_r = cameraRot.W;
                     var q_i = cameraRot.X;
                     var q_j = cameraRot.Y;
                     var q_k = cameraRot.Z;
-
-                    imageTransforms[image] = new ImageTransform(cameraPos, cameraRot);
                     var pitch = Math.Atan2(2 * (q_r * q_i + q_j * q_k), 1 - 2 * (Math.Pow(q_i, 2) + Math.Pow(q_j, 2)));
                     var yaw = Math.Asin(2 * (q_r * q_j - q_k * q_i));
                     var roll = Math.Atan2(2 * (q_r * q_k + q_i * q_j), 1 - 2 * (Math.Pow(q_j, 2) + Math.Pow(q_k, 2)));
+                    */
                     // y,p,r = no
                     // -y,-p,-r = no
                     // -p,-r,-y = no
@@ -469,9 +478,24 @@ namespace Downloader
                     // p,r,y = ?
                     // -p,y,r = no
                     // r,-p,y = no
-                    // -p,r,y = no
+                    // -p,r,y = no rand.Next(4){45 * angle1},{45 * angle2},{45 * angle3}
                     //geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},{(-1) * pitch * MathUtils.degreesPerRadian},{(1) * roll * MathUtils.degreesPerRadian},{(1) * yaw * MathUtils.degreesPerRadian}");
-                    geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},-45.0,0.0,0.0");
+                    geolocationFile.WriteLine($"{destName},{coords.Latitude},{coords.Longitude},{coords.Altitude},{rotX},{rotY},{rotZ}");
+                    angle1++;
+                    if (angle1 == 8)
+                    {
+                        angle1 = 0;
+                        angle2++;
+                        if (angle2 == 8)
+                        {
+                            angle2 = 0;
+                            angle3++;
+                            if (angle3 == 8)
+                            {
+                                angle3 = 0;
+                            }
+                        }
+                    }
                 }
                 catch (Exception e)
                 {
